@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS users (
   instagram_id TEXT,
   facebook_id TEXT,
   tiktok_id TEXT,
+  introduction_done BOOLEAN DEFAULT FALSE,
+  language TEXT,
   current_state TEXT,
   onboarding_step TEXT
 );
@@ -27,7 +29,7 @@ BEGIN
       AND table_schema = 'public'
       AND column_name NOT IN (
         'pau_id', 'whatsapp_id', 'first_name', 'last_name', 'email',
-        'instagram_id', 'facebook_id', 'tiktok_id', 'current_state', 'onboarding_step'
+        'instagram_id', 'facebook_id', 'tiktok_id', 'introduction_done', 'language', 'current_state', 'onboarding_step'
       )
   LOOP
     EXECUTE format('ALTER TABLE public.users DROP COLUMN IF EXISTS %I CASCADE;', col.column_name);
