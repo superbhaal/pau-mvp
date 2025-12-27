@@ -6,15 +6,31 @@ const { Pool } = require('pg');
 const app = express();
 app.use(bodyParser.json());
 
+// 1. FONDATIONS : Base de données PostgreSQL
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-const SYSTEM_PROMPT = `Tu es PAU, un assistant stratégique intelligent. 
-Ton but est d'aider l'utilisateur à structurer ses idées. 
-Sois concis, professionnel et utilise le prénom de l'utilisateur.`;
+// 2. LOGIQUE D'INTELLIGENCE : Prompt dynamique pour l'onboarding
+const getSystemPrompt = (user) => {
+  return `Tu es PAU, un assistant stratégique intelligent. 
+Ton objectif actuel est de compléter le profil de l'utilisateur pour garantir des "Clean Inputs".
 
+Voici les informations actuelles de l'utilisateur :
+- Prénom : ${user.first_name || 'Inconnu'}
+- Email : ${user.email || 'Non renseigné'}
+- Instagram : ${user.instagram_id || 'Non renseigné'}
+
+RÈGLES DE CONVERSATION :
+1. Si le prénom est "Ami" ou "Inconnu", demande-lui poliment son prénom.
+2. Si le prénom est connu mais pas l'email, demande son adresse email.
+3. Si l'email est connu mais pas l'ID Instagram, demande son compte Instagram.
+4. Une fois le profil complet, félicite-le et propose ton aide stratégique.
+Sois concis et professionnel.`;
+};
+
+// 3. WEBHOOK META (Vérification)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -26,6 +42,7 @@ app.get('/webhook', (req, res) => {
   }
 });
 
+// 4. RÉCEPTION ET TRAITEMENT
 app.post('/webhook', async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -36,10 +53,12 @@ app.post('/webhook', async (req, res) => {
       const waId = message.from;
       const userMsg = message.text.body;
 
+      // GOUVERNANCE : Récupération du profil utilisateur unique
       let { rows } = await pool.query('SELECT * FROM users WHERE whatsapp_id = $1', [waId]);
       let user = rows[0];
 
       if (!user) {
+        // Création automatique si le numéro est inconnu
         const newUser = await pool.query(
           'INSERT INTO users (pau_id, whatsapp_id, first_name, step) VALUES (gen_random_uuid(), $1, $2, $3) RETURNING *',
           [waId, 'Ami', 'onboarding']
@@ -47,13 +66,13 @@ app.post('/webhook', async (req, res) => {
         user = newUser.rows[0];
       }
 
-      // INTELLIGENCE : Appel à Gemini 2.0 Flash (modèle confirmé par ton compte)
+      // INTELLIGENCE : Appel à Gemini 2.0 Flash avec Prompt Dynamique
       const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
       
       const geminiPayload = {
         contents: [{
           parts: [{
-            text: `${SYSTEM_PROMPT}\n\nL'utilisateur s'appelle ${user.first_name}. Il dit : ${userMsg}`
+            text: `${getSystemPrompt(user)}\n\nMessage de l'utilisateur : ${userMsg}`
           }]
         }]
       };
@@ -61,6 +80,7 @@ app.post('/webhook', async (req, res) => {
       const geminiRes = await axios.post(geminiUrl, geminiPayload);
       const aiResponse = geminiRes.data.candidates[0].content.parts[0].text;
 
+      // PROTOCOLE : Envoi de la réponse sur WhatsApp
       await axios.post(
         `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
         {
@@ -73,10 +93,10 @@ app.post('/webhook', async (req, res) => {
     }
     res.sendStatus(200);
   } catch (error) {
-    console.error("Erreur Webhook PAU:", error.response?.data || error.message);
+    console.error("Erreur PAU:", error.response?.data || error.message);
     res.sendStatus(500);
   }
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`PAU (Gemini 2.0) en ligne sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`PAU (Onboarding Mode) sur le port ${PORT}`));
