@@ -6,28 +6,17 @@ const { Pool } = require('pg');
 const app = express();
 app.use(bodyParser.json());
 
-// 1. FONDATIONS : Base de données PostgreSQL
+// 1. FONDATIONS : Base de données
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// 2. LOGIQUE D'INTELLIGENCE : Prompt dynamique pour l'onboarding
+// 2. LOGIQUE D'INTELLIGENCE : Prompt dynamique
 const getSystemPrompt = (user) => {
-  return `Tu es PAU, un assistant stratégique intelligent. 
-Ton objectif actuel est de compléter le profil de l'utilisateur pour garantir des "Clean Inputs".
-
-Voici les informations actuelles de l'utilisateur :
-- Prénom : ${user.first_name || 'Inconnu'}
-- Email : ${user.email || 'Non renseigné'}
-- Instagram : ${user.instagram_id || 'Non renseigné'}
-
-RÈGLES DE CONVERSATION :
-1. Si le prénom est "Ami" ou "Inconnu", demande-lui poliment son prénom.
-2. Si le prénom est connu mais pas l'email, demande son adresse email.
-3. Si l'email est connu mais pas l'ID Instagram, demande son compte Instagram.
-4. Une fois le profil complet, félicite-le et propose ton aide stratégique.
-Sois concis et professionnel.`;
+  return `Tu es PAU, un assistant stratégique. Ton but est de compléter le profil utilisateur.
+Infos actuelles : Prénom: ${user.first_name}, Email: ${user.email || '?'}, Insta: ${user.instagram_id || '?'}.
+Règle : Demande l'info manquante dans l'ordre (Prénom -> Email -> Instagram). Sois pro et concis.`;
 };
 
 // 3. WEBHOOK META (Vérification)
@@ -53,41 +42,49 @@ app.post('/webhook', async (req, res) => {
       const waId = message.from;
       const userMsg = message.text.body;
 
-      // GOUVERNANCE : Récupération du profil utilisateur unique
+      // GOUVERNANCE : Récupération ou création de l'utilisateur
       let { rows } = await pool.query('SELECT * FROM users WHERE whatsapp_id = $1', [waId]);
       let user = rows[0];
-
       if (!user) {
-        // Création automatique si le numéro est inconnu
         const newUser = await pool.query(
-          'INSERT INTO users (pau_id, whatsapp_id, first_name, step) VALUES (gen_random_uuid(), $1, $2, $3) RETURNING *',
-          [waId, 'Ami', 'onboarding']
+          'INSERT INTO users (pau_id, whatsapp_id, first_name) VALUES (gen_random_uuid(), $1, $2) RETURNING *',
+          [waId, 'Ami']
         );
         user = newUser.rows[0];
       }
 
-      // INTELLIGENCE : Appel à Gemini 2.0 Flash avec Prompt Dynamique
       const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-      
-      const geminiPayload = {
-        contents: [{
-          parts: [{
-            text: `${getSystemPrompt(user)}\n\nMessage de l'utilisateur : ${userMsg}`
-          }]
-        }]
-      };
 
-      const geminiRes = await axios.post(geminiUrl, geminiPayload);
+      // ÉTAPE A : EXTRACTION DES DONNÉES (Clean Inputs)
+      const extractionPrompt = `Analyse ce message : "${userMsg}". 
+      Si l'utilisateur donne son prénom, email ou instagram, renvoie UNIQUEMENT un JSON : 
+      {"first_name": "...", "email": "...", "instagram_id": "..."}. Sinon renvoie {}.`;
+      
+      const exRes = await axios.post(geminiUrl, { contents: [{ parts: [{ text: extractionPrompt }] }] });
+      try {
+        const rawJson = exRes.data.candidates[0].content.parts[0].text.replace(/```json|```/g, "").trim();
+        const data = JSON.parse(rawJson);
+        
+        if (data.first_name) await pool.query('UPDATE users SET first_name = $1 WHERE whatsapp_id = $2', [data.first_name, waId]);
+        if (data.email) await pool.query('UPDATE users SET email = $1 WHERE whatsapp_id = $2', [data.email, waId]);
+        if (data.instagram_id) await pool.query('UPDATE users SET instagram_id = $1 WHERE whatsapp_id = $2', [data.instagram_id, waId]);
+        
+        // Rafraîchir les infos utilisateur après mise à jour
+        const updated = await pool.query('SELECT * FROM users WHERE whatsapp_id = $1', [waId]);
+        user = updated.rows[0];
+      } catch (e) { /* Pas de données trouvées */ }
+
+      // ÉTAPE B : GÉNÉRATION DE LA RÉPONSE
+      const chatPayload = {
+        contents: [{ parts: [{ text: `${getSystemPrompt(user)}\n\nUtilisateur : ${userMsg}` }] }]
+      };
+      const geminiRes = await axios.post(geminiUrl, chatPayload);
       const aiResponse = geminiRes.data.candidates[0].content.parts[0].text;
 
-      // PROTOCOLE : Envoi de la réponse sur WhatsApp
+      // PROTOCOLE : Envoi WhatsApp
       await axios.post(
         `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-        {
-          messaging_product: "whatsapp",
-          to: waId,
-          text: { body: aiResponse }
-        },
+        { messaging_product: "whatsapp", to: waId, text: { body: aiResponse } },
         { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` } }
       );
     }
@@ -99,4 +96,4 @@ app.post('/webhook', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`PAU (Onboarding Mode) sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`PAU Intelligent sur le port ${PORT}`));
