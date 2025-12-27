@@ -2,31 +2,23 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const { Pool } = require('pg');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 app.use(bodyParser.json());
 
-// 1. CONFIGURATION DES FONDATIONS (BBD & IA)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-
-// PROMPT SYSTÈME : Définit la personnalité de PAU
 const SYSTEM_PROMPT = `Tu es PAU, un assistant stratégique intelligent. 
 Ton but est d'aider l'utilisateur à structurer ses idées. 
 Sois concis, professionnel et utilise le prénom de l'utilisateur.`;
 
-// 2. WEBHOOK POUR META (Vérification initiale)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
   if (mode === 'subscribe' && token === 'pau_secure_2025') {
     res.status(200).send(challenge);
   } else {
@@ -34,7 +26,6 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// 3. RÉCEPTION ET TRAITEMENT DES MESSAGES
 app.post('/webhook', async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -42,15 +33,13 @@ app.post('/webhook', async (req, res) => {
     const message = changes?.value?.messages?.[0];
 
     if (message?.text?.body) {
-      const waId = message.from; // Numéro WhatsApp
+      const waId = message.from;
       const userMsg = message.text.body;
 
-      // GOUVERNANCE : Liaison entre WhatsApp et l'UUID pau_id
       let { rows } = await pool.query('SELECT * FROM users WHERE whatsapp_id = $1', [waId]);
       let user = rows[0];
 
       if (!user) {
-        // Création d'un nouvel utilisateur avec UUID natif Postgres
         const newUser = await pool.query(
           'INSERT INTO users (pau_id, whatsapp_id, first_name, step) VALUES (gen_random_uuid(), $1, $2, $3) RETURNING *',
           [waId, 'Ami', 'onboarding']
@@ -58,18 +47,20 @@ app.post('/webhook', async (req, res) => {
         user = newUser.rows[0];
       }
 
-      // INTELLIGENCE : Génération de la réponse personnalisée via Gemini
-      const chat = model.startChat({
-        history: [
-          { role: "user", parts: [{ text: SYSTEM_PROMPT }] },
-          { role: "model", parts: [{ text: "Compris. Je suis prêt." }] },
-        ],
-      });
+      // INTELLIGENCE : Appel à Gemini 2.0 Flash (modèle confirmé par ton compte)
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+      
+      const geminiPayload = {
+        contents: [{
+          parts: [{
+            text: `${SYSTEM_PROMPT}\n\nL'utilisateur s'appelle ${user.first_name}. Il dit : ${userMsg}`
+          }]
+        }]
+      };
 
-      const result = await chat.sendMessage(`L'utilisateur s'appelle ${user.first_name}. Il dit : ${userMsg}`);
-      const aiResponse = result.response.text();
+      const geminiRes = await axios.post(geminiUrl, geminiPayload);
+      const aiResponse = geminiRes.data.candidates[0].content.parts[0].text;
 
-      // PROTOCOLE : Envoi de la réponse via l'API Meta
       await axios.post(
         `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
         {
@@ -88,4 +79,4 @@ app.post('/webhook', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`PAU (Gemini Edition) en ligne sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`PAU (Gemini 2.0) en ligne sur le port ${PORT}`));
