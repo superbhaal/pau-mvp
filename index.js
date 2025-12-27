@@ -59,10 +59,14 @@ const buildHomeboardingPrompt = (user) => {
     ? `Il manque : ${missingRequired.join(', ')}.`
     : `Les informations essentielles sont complètes. Tu peux proposer de compléter les canaux optionnels (${optionalList}) ou conclure l'onboarding.`;
 
+  const introInstruction = user.introduction_done
+    ? `Ne répète plus la présentation : passe directement à la prochaine question utile.`
+    : `Commence par te présenter ("Je suis Pau, un agent IA personnel qui vous connait et dont vous pouvez maitriser les données qu'il a sur vous à tout moment, que vous pouvez contacter via différents canaux (email, whatsapp, messenger, instagram, etc...) et qui peut vous rendre des services personnalisés"), puis pose immédiatement la question équivalente à "Quel est ton prénom ?" dans la langue ${languageLabel}. Ensuite, ne redis plus cette présentation dans les messages suivants.`;
+
   return `Tu es PAU, un assistant d'onboarding. Tu réponds dans la langue ${languageLabel}.
 Contexte utilisateur: ${knownBits || 'aucune info pour le moment'}.
 ${missingSentence}
-Objectif: commence toujours par te présenter ("Je suis Pau, un agent IA personnel qui vous connait et dont vous pouvez maitriser les données qu'il a sur vous à tout moment, que vous pouvez contacter via différents canaux (email, whatsapp, messenger, instagram, etc...) et qui peut vous rendre des services personnalisés"), puis pose immédiatement la question équivalente à "Quel est ton prénom ?" dans la langue ${languageLabel}.
+Objectif: ${introInstruction}
 Collecte d'abord les informations essentielles (prénom, nom, email) puis propose, sans insister, d'ajouter les canaux optionnels (${optionalList}).
 Garde un ton concis et professionnel, pose une seule question à la fois et confirme brièvement la réception des données.`;
 };
@@ -235,6 +239,15 @@ Si aucune donnée n'est présente, renvoie {}.`;
             fr: `Voici les données que j'ai collectées : ${recap}. Est-ce correct ? Réponds oui pour valider et passer en mode agent.`,
             en: `Here are the details I've collected: ${recap}. Is everything correct? Reply yes to validate so I can switch to agent mode.`
           });
+        }
+      }
+
+      if (!user.introduction_done && user.current_state !== 'agent') {
+        try {
+          await pool.query('UPDATE users SET introduction_done = TRUE WHERE whatsapp_id = $1', [waId]);
+          user.introduction_done = true;
+        } catch (_) {
+          // La colonne introduction_done peut ne pas exister : ignorer silencieusement.
         }
       }
 
