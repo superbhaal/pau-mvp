@@ -12,37 +12,51 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// 2. Construction des prompts
-const buildHomeboardingPrompt = (user) => {
-  const missingFields = [];
-  if (!user.first_name) missingFields.push('prénom');
-  if (!user.last_name) missingFields.push('nom');
-  if (!user.email) missingFields.push('email');
-  if (!user.instagram_id) missingFields.push('identifiant Instagram');
+// 2. Construction des prompts et règles d'onboarding
+const REQUIRED_FIELDS = [
+  { key: 'first_name', label: 'prénom' },
+  { key: 'last_name', label: 'nom' },
+  { key: 'email', label: 'email' }
+];
 
+const OPTIONAL_CHANNELS = [
+  { key: 'instagram_id', label: "identifiant Instagram" },
+  { key: 'facebook_id', label: 'compte Facebook' },
+  { key: 'tiktok_id', label: 'compte TikTok' }
+];
+
+const getMissingRequiredFields = (user) =>
+  REQUIRED_FIELDS.filter(({ key }) => !user[key]).map(({ label }) => label);
+
+const buildHomeboardingPrompt = (user) => {
+  const missingRequired = getMissingRequiredFields(user);
   const knownBits = [
     user.first_name ? `Prénom: ${user.first_name}` : null,
     user.last_name ? `Nom: ${user.last_name}` : null,
     user.email ? `Email: ${user.email}` : null,
-    user.instagram_id ? `Instagram: ${user.instagram_id}` : null
+    user.instagram_id ? `Instagram: ${user.instagram_id}` : null,
+    user.facebook_id ? `Facebook: ${user.facebook_id}` : null,
+    user.tiktok_id ? `TikTok: ${user.tiktok_id}` : null
   ].filter(Boolean).join(' | ');
 
-  const missingSentence = missingFields.length
-    ? `Il manque : ${missingFields.join(', ')}.`
-    : 'Toutes les informations clés sont connues.';
+  const optionalList = OPTIONAL_CHANNELS.map(({ label }) => label).join(', ');
+  const missingSentence = missingRequired.length
+    ? `Il manque : ${missingRequired.join(', ')}.`
+    : `Les informations essentielles sont complètes. Tu peux proposer de compléter les canaux optionnels (${optionalList}) ou conclure l'onboarding.`;
 
   return `Tu es PAU, un assistant d'onboarding.
 Contexte utilisateur: ${knownBits || 'aucune info pour le moment'}.
 ${missingSentence}
-Objectif: récolte chaque information manquante une par une (dans l'ordre prénom, nom, email, Instagram), vérifie l'orthographe et reformule si besoin. Pose des questions courtes et professionnelles.`;
+Objectif: collecte d'abord les informations essentielles (prénom, nom, email) puis propose, sans insister, d'ajouter les canaux optionnels (${optionalList}).
+Garde un ton concis et professionnel, pose une seule question à la fois et confirme brièvement la réception des données.`;
 };
 
 const buildChatPrompt = (user) => {
-  const identity = `Prénom: ${user.first_name || '?'}, Nom: ${user.last_name || '?'}, Email: ${user.email || '?'}, Instagram: ${user.instagram_id || '?'}`;
+  const identity = `Prénom: ${user.first_name || '?'}, Nom: ${user.last_name || '?'}, Email: ${user.email || '?'}, Instagram: ${user.instagram_id || '?'}, Facebook: ${user.facebook_id || '?'}, TikTok: ${user.tiktok_id || '?'}`;
 
-  return `Tu es PAU, un assistant stratégique qui répond aux questions utilisateur.
+  return `Tu es PAU, maintenant en mode agent. Réponds aux questions de l'utilisateur en t'appuyant sur le contexte connu.
 Identité connue: ${identity}.
-Utilise ces informations pour contextualiser tes réponses (ton, niveau de détail, exemples pertinents). Si une information est manquante, tu peux gentiment la demander mais privilégie une réponse utile.`;
+Utilise ces informations pour contextualiser tes réponses (ton, niveau de détail, exemples pertinents). Si une information optionnelle est manquante et pertinente, tu peux la demander en une phrase mais privilégie une réponse utile.`;
 };
 
 // 3. Webhook de vérification Meta
@@ -74,18 +88,21 @@ app.post('/webhook', async (req, res) => {
       let user = rows[0];
       if (!user) {
         const insertion = await pool.query(
-          'INSERT INTO users (pau_id, whatsapp_id, first_name) VALUES (gen_random_uuid(), $1, $2) RETURNING *',
-          [waId, 'Ami']
+          'INSERT INTO users (pau_id, whatsapp_id, first_name, current_state) VALUES (gen_random_uuid(), $1, $2, $3) RETURNING *',
+          [waId, 'Ami', 'homeboarding']
         );
         user = insertion.rows[0];
+      } else if (!user.current_state) {
+        await pool.query('UPDATE users SET current_state = $1 WHERE whatsapp_id = $2', ['homeboarding', waId]);
+        user.current_state = 'homeboarding';
       }
 
       const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
       // 4.b Extraction d'informations utilisateur (homeboarding)
       const extractionPrompt = `Analyse ce message : "${userMsg}".
-Si l'utilisateur fournit son prénom, nom, email ou identifiant Instagram, renvoie UNIQUEMENT un JSON clair :
-{"first_name": "...", "last_name": "...", "email": "...", "instagram_id": "..."}.
+Si l'utilisateur fournit son prénom, nom, email, identifiant Instagram, compte Facebook ou TikTok, renvoie UNIQUEMENT un JSON clair :
+{"first_name": "...", "last_name": "...", "email": "...", "instagram_id": "...", "facebook_id": "...", "tiktok_id": "..."}.
 Si aucune donnée n'est présente, renvoie {}.`;
 
       const exRes = await axios.post(geminiUrl, { contents: [{ parts: [{ text: extractionPrompt }] }] });
@@ -103,6 +120,8 @@ Si aucune donnée n'est présente, renvoie {}.`;
         }
         if (data.email) await pool.query('UPDATE users SET email = $1 WHERE whatsapp_id = $2', [data.email, waId]);
         if (data.instagram_id) await pool.query('UPDATE users SET instagram_id = $1 WHERE whatsapp_id = $2', [data.instagram_id, waId]);
+        if (data.facebook_id) await pool.query('UPDATE users SET facebook_id = $1 WHERE whatsapp_id = $2', [data.facebook_id, waId]);
+        if (data.tiktok_id) await pool.query('UPDATE users SET tiktok_id = $1 WHERE whatsapp_id = $2', [data.tiktok_id, waId]);
 
         const refreshed = await pool.query('SELECT * FROM users WHERE whatsapp_id = $1', [waId]);
         user = refreshed.rows[0];
@@ -111,15 +130,62 @@ Si aucune donnée n'est présente, renvoie {}.`;
       }
 
       // 4.c Sélection du mode (homeboarding vs chat)
-      const needsHomeboarding = !user.first_name || !user.email || !user.instagram_id || !user.last_name;
-      const promptBuilder = needsHomeboarding ? buildHomeboardingPrompt : buildChatPrompt;
+      const missingRequired = getMissingRequiredFields(user);
+      const missingOptional = OPTIONAL_CHANNELS.filter(({ key }) => !user[key]).map(({ label }) => label);
 
-      const chatPayload = {
-        contents: [{ parts: [{ text: `${promptBuilder(user)}\n\nUtilisateur : ${userMsg}` }] }]
-      };
+      let aiResponse;
 
-      const geminiRes = await axios.post(geminiUrl, chatPayload);
-      const aiResponse = geminiRes.data.candidates?.[0]?.content?.parts?.[0]?.text || "Je n'ai pas compris, peux-tu reformuler ?";
+      if (user.current_state === 'agent') {
+        const chatPayload = {
+          contents: [{ parts: [{ text: `${buildChatPrompt(user)}\n\nUtilisateur : ${userMsg}` }] }]
+        };
+
+        const geminiRes = await axios.post(geminiUrl, chatPayload);
+        aiResponse = geminiRes.data.candidates?.[0]?.content?.parts?.[0]?.text || "Je n'ai pas compris, peux-tu reformuler ?";
+      } else {
+        // Homeboarding
+        if (missingRequired.length > 0) {
+          const chatPayload = {
+            contents: [{ parts: [{ text: `${buildHomeboardingPrompt(user)}\n\nUtilisateur : ${userMsg}` }] }]
+          };
+
+          const geminiRes = await axios.post(geminiUrl, chatPayload);
+          aiResponse = geminiRes.data.candidates?.[0]?.content?.parts?.[0]?.text || "Je n'ai pas compris, peux-tu reformuler ?";
+          await pool.query('UPDATE users SET current_state = $1 WHERE whatsapp_id = $2', ['homeboarding', waId]);
+          user.current_state = 'homeboarding';
+        } else if (user.onboarding_step === 'awaiting_confirmation') {
+          const normalized = userMsg.toLowerCase();
+          const isPositive = /\b(oui|yes|ok|c'est bon|c est bon|valide|confirm)/.test(normalized);
+          const isNegative = /\b(non|no|pas encore|attends)/.test(normalized);
+
+          if (isPositive) {
+            await pool.query('UPDATE users SET current_state = $1, onboarding_step = NULL WHERE whatsapp_id = $2', ['agent', waId]);
+            user.current_state = 'agent';
+            user.onboarding_step = null;
+            aiResponse = "Parfait, j'ai validé ces informations et je passe en mode agent. Comment puis-je t'aider ?";
+          } else if (isNegative) {
+            aiResponse = "D'accord, indique-moi les corrections à apporter sur tes informations et je mettrai à jour avant de passer en mode agent.";
+          } else {
+            aiResponse = "Peux-tu confirmer si le récapitulatif est correct ? Réponds par oui pour valider ou précise ce qui doit être ajusté.";
+          }
+        } else if (user.onboarding_step !== 'optional_requested' && missingOptional.length > 0) {
+          await pool.query('UPDATE users SET onboarding_step = $1 WHERE whatsapp_id = $2', ['optional_requested', waId]);
+          user.onboarding_step = 'optional_requested';
+          aiResponse = `J'ai toutes les infos essentielles. Si tu veux, tu peux partager aussi : ${missingOptional.join(', ')}.`;
+        } else {
+          await pool.query('UPDATE users SET onboarding_step = $1 WHERE whatsapp_id = $2', ['awaiting_confirmation', waId]);
+          user.onboarding_step = 'awaiting_confirmation';
+          const recap = [
+            `Prénom: ${user.first_name || 'non fourni'}`,
+            `Nom: ${user.last_name || 'non fourni'}`,
+            `Email: ${user.email || 'non fourni'}`,
+            `Instagram: ${user.instagram_id || 'non fourni'}`,
+            `Facebook: ${user.facebook_id || 'non fourni'}`,
+            `TikTok: ${user.tiktok_id || 'non fourni'}`
+          ].join(' | ');
+          aiResponse = `Voici les données que j'ai collectées : ${recap}. Est-ce correct ? Réponds oui pour valider et passer en mode agent.`;
+        }
+      }
 
       // 4.d Envoi de la réponse sur WhatsApp
       await axios.post(
