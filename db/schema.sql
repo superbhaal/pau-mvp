@@ -4,7 +4,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- Ensure the users table exists with the minimal, useful columns
 CREATE TABLE IF NOT EXISTS users (
   pau_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  whatsapp_id TEXT UNIQUE NOT NULL,
+  whatsapp_id TEXT UNIQUE,
   first_name TEXT,
   last_name TEXT,
   email TEXT,
@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS users (
   current_state TEXT,
   onboarding_step TEXT
 );
+
+-- Unique index on email for user lookup via email channel
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users (email) WHERE email IS NOT NULL;
 
 -- Drop any legacy columns that are no longer used by the application
 DO $$
@@ -38,5 +41,4 @@ END $$;
 
 -- Align column defaults and constraints with the expected runtime behavior
 ALTER TABLE users
-  ALTER COLUMN pau_id SET DEFAULT gen_random_uuid(),
-  ALTER COLUMN whatsapp_id SET NOT NULL;
+  ALTER COLUMN pau_id SET DEFAULT gen_random_uuid();
