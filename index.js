@@ -124,6 +124,17 @@ async function sendEmail(to, subject, text) {
       { from: `PAU <${fromEmail}>`, to, subject, text },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } }
     );
+  } else if (provider === 'brevo') {
+    await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      {
+        sender: { name: 'PAU', email: fromEmail },
+        to: [{ email: to }],
+        subject,
+        textContent: text
+      },
+      { headers: { 'api-key': apiKey, 'Content-Type': 'application/json' } }
+    );
   }
 }
 
